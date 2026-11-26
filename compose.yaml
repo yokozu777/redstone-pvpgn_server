@@ -1,0 +1,164 @@
+x-bnetd-build: &bnetd-build
+  context: .
+  dockerfile: bnetd.dockerfile
+
+services:
+  render:
+    image: ${BNETD_IMAGE}
+    build: *bnetd-build
+    restart: "no"
+    network_mode: "none"
+    env_file: .env
+    entrypoint: ["/bin/sh", "/seed.sh"]
+    volumes:
+      - ./templates:/templates:ro
+      - ./scripts/render.sh:/render.sh:ro
+      - ./scripts/seed.sh:/seed.sh:ro
+      - ./scripts/news.sh:/news.sh:ro
+      - ${DOCKER_SOCKET}:/var/run/docker.sock:ro
+      - ./etc:/out/etc
+      - ./var:/out/var
+      - ./conf:/out/conf
+  d2cs:
+    container_name: ${D2CS_HOSTNAME}
+    hostname: ${D2CS_HOSTNAME}
+    image: ${BNETD_IMAGE}
+    build: *bnetd-build
+    env_file: .env
+    volumes:
+      - ./etc:/pvpgn/etc/pvpgn
+      - ./var:/pvpgn/var/pvpgn
+    ports:
+      - "${D2CS_PORT}:${D2CS_PORT}"
+    entrypoint: ["/pvpgn/sbin/d2cs", "-f"]
+    extra_hosts:
+      - "${D2GS_HOSTNAME}:${D2GS_IP}"
+    depends_on:
+      render:
+        condition: service_completed_successfully
+    networks:
+      d2srv_net:
+        ipv4_address: ${D2CS_IP}
+  d2dbs:
+    container_name: ${D2DBS_HOSTNAME}
+    hostname: ${D2DBS_HOSTNAME}
+    image: ${BNETD_IMAGE}
+    build: *bnetd-build
+    env_file: .env
+    volumes:
+      - ./etc:/pvpgn/etc/pvpgn
+      - ./var:/pvpgn/var/pvpgn
+    ports:
+      - "${D2DBS_PORT}:${D2DBS_PORT}"
+    entrypoint: ["/pvpgn/sbin/d2dbs", "-f"]
+    extra_hosts:
+      - "${D2GS_HOSTNAME}:${D2GS_IP}"
+    depends_on:
+      render:
+        condition: service_completed_successfully
+    networks:
+      d2srv_net:
+        ipv4_address: ${D2DBS_IP}
+  pvpgn:
+    container_name: ${PVPGN_HOSTNAME}
+    hostname: ${PVPGN_HOSTNAME}
+    image: ${BNETD_IMAGE}
+    build: *bnetd-build
+    env_file: .env
+    volumes:
+      - ./etc:/pvpgn/etc/pvpgn
+      - ./var:/pvpgn/var/pvpgn
+    ports:
+      - "${BNETD_PORT}:${BNETD_PORT}"
+      - "${BNETD_PORT}:${BNETD_PORT}/udp"
+      - "${W3ROUTE_PORT}:${W3ROUTE_PORT}"
+    entrypoint: ["/pvpgn/sbin/bnetd", "-f"]
+    depends_on:
+      render:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+    networks:
+      d2srv_net:
+        ipv4_address: ${PVPGN_IP}
+  mysql:
+    container_name: ${MYSQL_HOSTNAME}
+    hostname: ${MYSQL_HOSTNAME}
+    image: ${MYSQL_IMAGE}
+    environment:
+      MARIADB_DATABASE: ${DB_NAME}
+      MARIADB_USER: ${DB_USER}
+      MARIADB_PASSWORD: ${DB_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MARIADB_AUTO_UPGRADE: "1"
+    volumes:
+      - ./mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mariadb", "--defaults-extra-file=/var/lib/mysql/.my-healthcheck.cnf", "--protocol=tcp", "-h", "127.0.0.1", "-N", "-e", "SELECT 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      d2srv_net:
+        ipv4_address: ${MYSQL_IP}
+  d2gs:
+    container_name: ${D2GS_HOSTNAME}
+    hostname: ${D2GS_HOSTNAME}
+    image: ${D2GS_IMAGE}
+    build:
+      context: .
+      dockerfile: d2gs.dockerfile
+    env_file: .env
+    volumes:
+      - ./conf/d2gs.reg:/root/.wine/drive_c/d2gs/d2gs.reg:ro
+    ports:
+      - "${D2GS_PORT}:${D2GS_PORT}"
+    depends_on:
+      render:
+        condition: service_completed_successfully
+      d2cs:
+        condition: service_started
+      d2dbs:
+        condition: service_started
+      pvpgn:
+        condition: service_started
+    networks:
+      d2srv_net:
+        ipv4_address: ${D2GS_IP}
+  d1gs:
+    container_name: ${D1GS_HOSTNAME}
+    hostname: ${D1GS_HOSTNAME}
+    image: ${D1GS_IMAGE}
+    build:
+      context: .
+      dockerfile: d1gs.dockerfile
+    ports:
+      - "${D1GS_PORT}:${D1GS_PORT}"
+    entrypoint:
+      - /usr/local/bin/devilutionx-server
+      - --game
+      - diablo
+      - --data-dir
+      - /opt/diablo1
+      - --save-dir
+      - /var/lib/d1gs
+      - --config-dir
+      - /etc/d1gs
+      - --name
+      - ${D1GS_NAME}
+      - --port
+      - ${D1GS_PORT}
+      - --server-tcp
+    networks:
+      d2srv_net:
+        ipv4_address: ${D1GS_IP}
+networks:
+  d2srv_net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.enable_ipv6: "false"
+    ipam:
+      driver: default
+      config:
+        - subnet: ${SUBNET}
