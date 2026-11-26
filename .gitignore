@@ -1,5 +1,4 @@
 mysql/
 etc/
 var/
-.env
 conf/d2gs.reg
